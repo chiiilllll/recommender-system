@@ -1,0 +1,137 @@
+---
+title: "推薦系統程式實作"
+author: "Li"
+format:
+ pdf:
+    engine: xelatex
+    documentclass: article
+    geometry: "left=2cm, right=2cm, top=2cm, bottom=2cm, a4paper"
+    fontsize: 12pt
+    header-includes:
+      - \usepackage{xeCJK}
+      - \setCJKmainfont{Microsoft JhengHei UI}
+editor: visual
+---
+
+```{r,message=FALSE,warning=FALSE}
+library(showtext)
+showtext_auto()  # 啟用 showtext
+font_add("Microsoft JhengHei UI", "C:/Windows/Fonts/msjh.ttc")  # 添加你使用的字體
+```
+
+# 載入套件與資料集
+```{r,message=FALSE,warning=FALSE}
+library(ggplot2) 
+library(tidyr)  
+library(recommenderlab)
+data("MovieLense")
+```
+
+# 壹、探索性資料分析 (EDA)
+```{r}
+# 1. 檢視資料集維度
+print(dim(MovieLense))
+
+# 2. 評分分佈直方圖
+ratings_vector <- getRatings(MovieLense)
+barplot(table(ratings_vector), 
+     main = "MovieLens 100k：使用者評分分佈圖", 
+     xlab = "星等 (1~5分)", ylab = "評分數量",
+     col = "steelblue")
+
+# 3. 評分矩陣熱力圖 (觀察資料稀疏性)
+image(MovieLense[1:200,1:200], 
+      main = "評分矩陣熱力圖 (驗證資料稀疏性)",
+      ylab = "使用者 (Users)", xlab = "電影 (Movies)")
+```
+
+# 貳、四種演算法比較
+```{r}
+# 1. 建立實驗設計 (80% 訓練集，給定 15 筆，>=4 分視為喜歡)
+set.seed(2026)
+scheme_rating <- evaluationScheme(MovieLense, method="split",
+                                  train=0.8, given=15, goodRating=4)
+
+# 2. 定義比較模型清單
+algorithms <- list(
+  "Random"               = list(name="RANDOM", param=NULL),
+  "Popular"              = list(name="POPULAR", param=NULL),
+  "UBCF"                 = list(name="UBCF",param=list(method="Cosine")),
+  "Matrix_Factorization" = list(name="SVDF", param=list(k=10))
+)
+
+# 3. 計算預測誤差 (RMSE, MSE, MAE)
+results_rating <- evaluate(scheme_rating, algorithms, type="ratings")
+
+# 提取各模型的 RMSE 結果並合併成表格 
+eval_rmse_results <- do.call(rbind, lapply(results_rating, function(x) avg(x)))
+print(eval_rmse_results)
+
+# 4. 計算 Top-N 推薦指標 (Precision, Recall, ROC)
+results_topN <- evaluate(scheme_rating, algorithms, n=c(1, 5, 10, 15),
+                         type="topNList")
+
+# Top-n 的 Precision 與 Recall 數值(confusion matrix)
+avg(results_topN)
+
+# 5. 繪製 ROC 與 Precision-Recall 曲線
+plot(results_topN, annotate = c(1, 3), legend="topleft", main="ROC 曲線")
+plot(results_topN, "prec/rec", annotate = 3, legend="topright",
+     main="Precision-Recall 曲線")
+```
+
+# 參、綜合比較長條圖 (RMSE, Precision, Recall)
+```{r}
+# 1. 指定提取 Top-10 的推薦表現
+top_n_val <- 3 #(第3個是top-10)
+
+# 2. 整理最終繪圖資料框
+final_metrics <- data.frame(
+  Model = c("Random","Popular", "UBCF", "Matrix_Factorization"),
+  
+  RMSE = eval_rmse_results[, "RMSE"],
+  
+  Precision = c(
+    avg(results_topN)[["Random"]][top_n_val, "precision"],
+    avg(results_topN)[["Popular"]][top_n_val, "precision"],
+    avg(results_topN)[["UBCF"]][top_n_val, "precision"],
+    avg(results_topN)[["Matrix_Factorization"]][top_n_val, "precision"]
+  ),
+  
+  Recall = c(
+    avg(results_topN)[["Random"]][top_n_val, "recall"],
+    avg(results_topN)[["Popular"]][top_n_val, "recall"],
+    avg(results_topN)[["UBCF"]][top_n_val, "recall"],
+    avg(results_topN)[["Matrix_Factorization"]][top_n_val, "recall"]
+  )
+)
+print(final_metrics)
+
+# 3. 資料轉換
+metrics_long <- pivot_longer(final_metrics, 
+                             cols = c(RMSE, Precision, Recall), 
+                             names_to = "Metric", 
+                             values_to = "Value")
+
+# 設定 X 軸與分面圖的顯示順序
+metrics_long$Model <- factor(metrics_long$Model,
+                      levels = c("Random","Popular", "UBCF", "Matrix_Factorization"))
+metrics_long$Metric <- factor(metrics_long$Metric,
+                              levels = c("RMSE", "Precision", "Recall"))
+
+# 4. 繪製分面長條圖
+ggplot(metrics_long, aes(x = Model, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", color = "black", width = 0.6) +
+  facet_wrap(~ Metric, scales = "free_y") + 
+  scale_fill_brewer(palette = "Set2") + 
+  theme_bw() + 
+  
+  labs(title = "推薦演算法綜合指標比較",
+       subtitle = "RMSE：越低越好 │ Precision & Recall：越高越好",
+       x = "推薦模型", y = "指標數值") +
+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 11, face = "bold"),
+        strip.text = element_text(size = 13, face = "bold"), 
+        legend.position = "none") 
+```
+
